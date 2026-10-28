@@ -51,7 +51,7 @@ class BaselineAligner:
     max_matrix_gb : safety limit. Building an N x N float32 matrix needs
         4*N^2 bytes (N=50,000 -> ~10 GB). If the estimate exceeds this limit
         a MemoryError is raised BEFORE allocating, which is exactly the
-        O(N^2) failure Experiment 3 wants to demonstrate.
+        O(N^2) failure these experiments wants to demonstrate.
 
     Example
     -------
