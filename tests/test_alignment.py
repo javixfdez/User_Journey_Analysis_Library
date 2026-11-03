@@ -113,11 +113,3 @@ def test_memory_guard_and_readonly_matrix():
     al.fit_distance_matrix(SEQS)
     with pytest.raises(ValueError):
         al.distance_matrix[0, 1] = 99
-
-
-def test_custom_callable_and_prototypes_not_ready():
-    al = BaselineAligner(metric=lambda a, b: abs(len(a) - len(b)))
-    D = al.fit_distance_matrix(SEQS)
-    assert D[0, 2] == 1
-    with pytest.raises(NotImplementedError):
-        al.extract_prototypes(2)

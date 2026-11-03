@@ -19,6 +19,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
+from .kmedoids import pam, silhouette_samples_from_distances
+
 from .distance import (
     assign_stages,
     levenshtein_distance,
@@ -89,8 +91,10 @@ class BaselineAligner:
 
         # ---- results filled by extract_prototypes (trailing _ = sklearn style:
         #      "attribute that exists only after fitting") ----
-        self.medoids_: Optional[List[int]] = None
-        self.labels_: Optional[np.ndarray] = None
+        self.medoids_: Optional[np.ndarray] = None   # session indices of the prototypes
+        self.labels_: Optional[np.ndarray] = None    # cluster id of every session
+        self.inertia_: Optional[float] = None        # total distance to the medoids
+        self.n_iter_: Optional[int] = None           # SWAP moves applied by PAM
 
     # ------------------------------------------------------------------
     # Step 1: pairwise distance matrix
@@ -139,17 +143,87 @@ class BaselineAligner:
         return D
 
     # ------------------------------------------------------------------
-    # Step 2: prototypes (k-medoids / PAM) - NEXT TO IMPLEMENT
+    # Step 2: prototypes (k-medoids / PAM)
     # ------------------------------------------------------------------
-    def extract_prototypes(self, k: int, max_iter: int = 100) -> Dict[str, Any]:
+    def extract_prototypes(
+        self,
+        k: int,
+        max_iter: int = 100,
+        init: str = "build",
+        n_init: int = 1,
+        random_state: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Will run k-medoids (PAM) directly on ``self._distance_matrix`` and fill
-        ``self.medoids_`` / ``self.labels_``. Not implemented yet.
+        Cluster the journeys into ``k`` groups with PAM (see kmedoids.py) and
+        return the representative journey ("prototype" = medoid) of each group.
+ 
+        Parameters
+        ----------
+        k            : number of clusters.
+        max_iter     : maximum number of swap moves.
+        init         : "build" (deterministic, recommended) or "random".
+        n_init       : number of random restarts (only for init="random"; the
+                       run with the lowest cost is kept).
+        random_state : seed for init="random".
+ 
+        Returns a dict and also stores the results on the object:
+          medoids    session indices of the prototypes      (-> self.medoids_)
+          labels     cluster id of every session            (-> self.labels_)
+          inertia    sum of distances to the own medoid     (-> self.inertia_)
+          n_iter     swaps applied                          (-> self.n_iter_)
+          converged  False if max_iter stopped the search
+          sizes      sessions per cluster (cluster 0 is the largest)
+          prototypes the medoid journeys themselves
         """
         if self._distance_matrix is None:
             raise ValueError("Distance matrix not computed. Call fit_distance_matrix first.")
-        raise NotImplementedError("k-medoids (PAM) is the next step of the build.")
-
+        if init == "build":
+            n_init = 1                       # deterministic: restarts would be identical
+ 
+        rng = np.random.default_rng(random_state)
+        best = None
+        for _ in range(max(1, n_init)):
+            run = pam(self._distance_matrix, k, init=init, max_iter=max_iter, rng=rng)
+            if best is None or run[2] < best[2]:
+                best = run
+        medoids, labels, inertia, n_iter, converged = best
+ 
+        self.medoids_, self.labels_ = medoids, labels
+        self.inertia_, self.n_iter_ = inertia, n_iter
+        return {
+            "medoids": medoids,
+            "labels": labels,
+            "inertia": inertia,
+            "n_iter": n_iter,
+            "converged": converged,
+            "sizes": np.bincount(labels, minlength=k),
+            "prototypes": self.prototypes,
+        }
+ 
+    def silhouette_score(self) -> float:
+        """
+        Mean silhouette of the current clustering, computed from the distance
+        matrix (about +1 = compact, well-separated groups; about 0 = no real
+        structure). Rule of thumb (Kaufman & Rousseeuw): < 0.25 means no
+        substantial structure, 0.26-0.50 weak, > 0.50 reasonable.
+        """
+        if self.labels_ is None:
+            raise ValueError("No clustering yet. Call extract_prototypes first.")
+        return float(silhouette_samples_from_distances(self._distance_matrix, self.labels_).mean())
+ 
+    def plot_clusters(self, **kwargs):
+            """
+            Convenience wrapper around ``journey_analyzer.visualization.plot_clusters``:
+            scatter plot of the sessions around their medoids (2D MDS projection of
+            the distance matrix). Extra keyword arguments (title, links, jitter, ...)
+            are passed through. Returns (figure, coordinates).
+            """
+            if self.labels_ is None:
+                raise ValueError("No clustering yet. Call extract_prototypes first.")
+            from ..visualization import plot_clusters      # lazy: avoids a circular import
+            return plot_clusters(self._distance_matrix, self.labels_, self.medoids_, **kwargs)
+    
+    
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -161,7 +235,7 @@ class BaselineAligner:
             weights = self.stage_weights
             return lambda a, b: weighted_levenshtein_distance(a, b, weights)
         return _PLAIN_METRICS[self.metric]
-
+ 
     def _prepare(self, seqs: List[Sequence[str]]) -> List[Any]:
         """
         Convert journeys into whatever the metric expects. Done ONCE per
@@ -170,7 +244,7 @@ class BaselineAligner:
         if self.metric == "weighted":
             return [assign_stages(s, self.event_to_stage, self.default_stage) for s in seqs]
         return seqs
-
+ 
     # ------------------------------------------------------------------
     # Public read-only views
     # ------------------------------------------------------------------
@@ -178,7 +252,14 @@ class BaselineAligner:
     def distance_matrix(self) -> Optional[np.ndarray]:
         """Read-only access to the computed matrix (None before fitting)."""
         return self._distance_matrix
-
+ 
+    @property
+    def prototypes(self) -> Optional[List[Sequence[str]]]:
+        """The medoid journeys (one per cluster), or None before clustering."""
+        if self.medoids_ is None:
+            return None
+        return [self._sequences[i] for i in self.medoids_]
+ 
     @property
     def sequences(self) -> List[Sequence[str]]:
         """The journeys the matrix was computed on, in matrix order."""
