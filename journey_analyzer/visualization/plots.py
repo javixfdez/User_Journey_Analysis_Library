@@ -33,7 +33,7 @@ import numpy as np
 
 from ..alignment.kmedoids import silhouette_samples_from_distances
 
-__all__ = ["classical_mds", "plot_clusters"]
+__all__ = ["classical_mds", "plot_clusters", "plot_transition_matrix", "plot_dropoff_rates"]
 
 
 # ---------------------------------------------------------------------------
@@ -178,3 +178,90 @@ def plot_clusters(
     )
     fig.tight_layout()
     return fig, X
+
+
+# ---------------------------------------------------------------------------
+# Transition-matrix heatmap
+# ---------------------------------------------------------------------------
+def plot_transition_matrix(P, states, title=None, ax=None, annotate=True,
+                           hide_empty=True, vmax=None, cmap="Blues", rows=None, cols=None):
+    """
+    Heatmap of a transition matrix: row = current event, column = next event,
+    colour and number = probability.
+
+    WHY A HEATMAP AND NOT A SANKEY / NODE-LINK DIAGRAM?
+    On dense flows, ribbons and arrows cross and become unreadable (the
+    "spaghetti model"); Zhao et al. (2015) found matrix designs were read more
+    accurately than node-link ones on path/link comparison tasks. A matrix
+    never overlaps and puts every transition in a fixed place, so two clusters'
+    heatmaps can be compared cell by cell.
+
+    hide_empty drops all-zero rows/columns (by default the <END> row and the
+    <START> column, plus any event absent from the data). To COMPARE several
+    heatmaps cell by cell they must show the same rows and columns, so pass the
+    same ``rows`` and ``cols`` (lists of state names; they override hide_empty)
+    and the same ``vmax`` (one colour scale).
+    """
+    import matplotlib.pyplot as plt
+
+    P = np.asarray(P, dtype=float)
+    states = list(states)
+    if rows is not None:
+        row_idx = np.array([states.index(r) for r in rows])
+    else:
+        row_idx = np.flatnonzero(P.sum(axis=1) > 0) if hide_empty else np.arange(len(states))
+    if cols is not None:
+        col_idx = np.array([states.index(c) for c in cols])
+    else:
+        col_idx = np.flatnonzero(P.sum(axis=0) > 0) if hide_empty else np.arange(len(states))
+    M = P[np.ix_(row_idx, col_idx)]
+    rows, cols = row_idx, col_idx
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(0.9 * len(cols) + 2.5, 0.8 * len(rows) + 1.5))
+    vmax = float(vmax) if vmax is not None else max(float(M.max()), 1e-9)
+    im = ax.imshow(M, cmap=cmap, vmin=0.0, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(cols)), [states[i] for i in cols], rotation=45, ha="right")
+    ax.set_yticks(range(len(rows)), [states[i] for i in rows])
+    ax.set_xlabel("next event")
+    ax.set_ylabel("current event")
+    if annotate:
+        for i in range(M.shape[0]):
+            for j in range(M.shape[1]):
+                if M[i, j] >= 0.005:
+                    ax.text(j, i, f"{M[i, j]:.2f}", ha="center", va="center", fontsize=8,
+                            color="white" if M[i, j] > 0.6 * vmax else "black")
+    if title:
+        ax.set_title(title)
+    ax.figure.colorbar(im, ax=ax, label="probability", fraction=0.046, pad=0.04)
+    return ax
+
+
+# ---------------------------------------------------------------------------
+# Drop-off / terminal-state chart
+# ---------------------------------------------------------------------------
+def plot_dropoff_rates(rates, title=None, ax=None):
+    """
+    Grouped bar chart of P(session ends right after this event).
+
+    rates : {series_name: {event: probability}}, e.g. one series per cluster
+            plus "all sessions". Bars with high values mark where users leave.
+    """
+    import matplotlib.pyplot as plt
+
+    names = list(rates)
+    events = list(next(iter(rates.values())))
+    if ax is None:
+        _, ax = plt.subplots(figsize=(max(7, 1.3 * len(events)), 4))
+    width = 0.8 / len(names)
+    for k, name in enumerate(names):
+        ax.bar(np.arange(len(events)) + k * width, [rates[name][e] for e in events],
+               width=width, label=name)
+    ax.set_xticks(np.arange(len(events)) + width * (len(names) - 1) / 2, events, rotation=45, ha="right")
+    ax.set_ylabel("P(session ends after this event)")
+    ax.set_ylim(0, None)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(fontsize=8)
+    if title:
+        ax.set_title(title)
+    return ax
